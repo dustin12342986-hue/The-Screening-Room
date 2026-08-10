@@ -422,11 +422,27 @@ function renderAuthGate() {
   `;
   document.getElementById('googleSignInBtn').onclick = () => {
     const provider = new firebase.auth.GoogleAuthProvider();
-    auth.signInWithPopup(provider).catch((e) => {
-      alert('Sign-in failed: ' + e.message);
-    });
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      // Popups are unreliable on mobile browsers — a full-page redirect is
+      // Firebase's own recommended approach there. getRedirectResult() below
+      // picks the sign-in back up after Google sends the browser back here.
+      auth.signInWithRedirect(provider).catch((e) => {
+        alert('Sign-in failed: ' + e.message);
+      });
+    } else {
+      auth.signInWithPopup(provider).catch((e) => {
+        alert('Sign-in failed: ' + e.message);
+      });
+    }
   };
 }
+
+// Completes a signInWithRedirect flow (mobile) once Google sends the
+// browser back to this page. No-op if the user signed in via popup instead.
+auth.getRedirectResult().catch((e) => {
+  console.error('Redirect sign-in error:', e);
+});
 
 function signOut() {
   auth.signOut();
