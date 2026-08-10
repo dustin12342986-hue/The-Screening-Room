@@ -334,6 +334,19 @@ let currentUser = null;
 let storageStatus = null;
 let pendingUploads = 0;
 
+// Warn before an accidental refresh/close cancels an in-progress upload —
+// this is the actual, confirmed cause of the "my library disappeared" bug:
+// leaving mid-upload cancels that item's save to the cloud before it
+// finishes, so it never actually gets there.
+window.addEventListener('beforeunload', (e) => {
+  if (pendingUploads > 0) {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+
+
 function itemsCollection() {
   return db.collection('users').doc(currentUser.uid).collection('items');
 }
@@ -393,7 +406,7 @@ function renderStorageBanner() {
   if (!el) return;
   if (pendingUploads > 0) {
     el.style.display = 'block';
-    el.textContent = `Uploading ${pendingUploads} file${pendingUploads > 1 ? 's' : ''} to your library...`;
+    el.textContent = `Uploading ${pendingUploads} file${pendingUploads > 1 ? 's' : ''} to your library — stay on this page until it finishes, or those files won't save.`;
     return;
   }
   if (!storageStatus || storageStatus.ok) { el.style.display = 'none'; return; }
