@@ -361,16 +361,52 @@ function bbTimeout(promise, ms, label) {
   ]);
 }
 
+let uploadTracker = {}; // { [itemId]: { name, percent, secondsLeft } }
+let uploadTickInterval = null;
+
+function bbFormatUploadStatus() {
+  const entries = Object.values(uploadTracker);
+  if (entries.length === 0) return null;
+  return entries
+    .map((u) => `${u.name}: ${u.percent}% (${u.secondsLeft}s until timeout)`)
+    .join(" | ");
+}
+
+function bbStartUploadTicker() {
+  if (uploadTickInterval) return;
+  uploadTickInterval = setInterval(() => {
+    let anyLeft = false;
+    Object.values(uploadTracker).forEach((u) => {
+      if (u.secondsLeft > 0) { u.secondsLeft -= 1; anyLeft = true; }
+    });
+    renderStorageBanner();
+    if (!anyLeft && Object.keys(uploadTracker).length === 0) {
+      clearInterval(uploadTickInterval);
+      uploadTickInterval = null;
+    }
+  }, 1000);
+}
+
 async function saveItem(item) {
   if (!currentUser) return;
   const { _blob, ...rest } = item;
+  const trackerKey = String(item.id);
   try {
     if (_blob instanceof Blob && !item.storagePath) {
       pendingUploads++;
+      uploadTracker[trackerKey] = { name: item.name || "file", percent: 0, secondsLeft: 180 };
+      bbStartUploadTicker();
       renderStorageBanner();
       const path = `users/${currentUser.uid}/items/${item.id}/${(item.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const ref = storage.ref(path);
       const uploadTask = ref.put(_blob);
+      uploadTask.on('state_changed', (snapshot) => {
+        const pct = snapshot.totalBytes ? Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100) : 0;
+        if (uploadTracker[trackerKey]) {
+          uploadTracker[trackerKey].percent = pct;
+          renderStorageBanner();
+        }
+      });
       // 3-minute cap so a stalled mobile upload fails cleanly with a real
       // error instead of leaving the "Uploading..." banner stuck forever.
       try {
@@ -382,11 +418,13 @@ async function saveItem(item) {
       rest.src = await bbTimeout(ref.getDownloadURL(), 30000, "Getting file link");
       rest.storagePath = path;
       pendingUploads--;
+      delete uploadTracker[trackerKey];
     }
     await bbTimeout(itemsCollection().doc(String(item.id)).set(rest), 30000, "Saving details");
     storageStatus = { ok: true };
   } catch (e) {
     pendingUploads = Math.max(0, pendingUploads - 1);
+    delete uploadTracker[trackerKey];
     console.error("saveItem failed:", e);
     const timedOut = /timed out/i.test(e.message || "");
     storageStatus = {
@@ -428,7 +466,8 @@ function renderStorageBanner() {
   if (!el) return;
   if (pendingUploads > 0) {
     el.style.display = 'block';
-    el.textContent = `Uploading ${pendingUploads} file${pendingUploads > 1 ? 's' : ''} to your library — stay on this page until it finishes, or those files won't save.`;
+    const detail = bbFormatUploadStatus();
+    el.textContent = `Uploading ${pendingUploads} file${pendingUploads > 1 ? 's' : ''} — stay on this page until it finishes.${detail ? " " + detail : ""}`;
     return;
   }
   if (!storageStatus || storageStatus.ok) { el.style.display = 'none'; return; }
