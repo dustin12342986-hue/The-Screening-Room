@@ -354,6 +354,13 @@ function itemsCollection() {
 // Uploads a fresh local Blob to this user's Storage bucket the first time an
 // item is saved; subsequent saves (rating, tags) just update Firestore since
 // the file itself never changes. `item.storagePath` marks "already uploaded".
+function bbTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error((label || "Operation") + " timed out")), ms)),
+  ]);
+}
+
 async function saveItem(item) {
   if (!currentUser) return;
   const { _blob, ...rest } = item;
@@ -363,16 +370,31 @@ async function saveItem(item) {
       renderStorageBanner();
       const path = `users/${currentUser.uid}/items/${item.id}/${(item.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const ref = storage.ref(path);
-      await ref.put(_blob);
-      rest.src = await ref.getDownloadURL();
+      const uploadTask = ref.put(_blob);
+      // 3-minute cap so a stalled mobile upload fails cleanly with a real
+      // error instead of leaving the "Uploading..." banner stuck forever.
+      try {
+        await bbTimeout(uploadTask, 180000, "Upload");
+      } catch (timeoutErr) {
+        uploadTask.cancel();
+        throw timeoutErr;
+      }
+      rest.src = await bbTimeout(ref.getDownloadURL(), 30000, "Getting file link");
       rest.storagePath = path;
       pendingUploads--;
     }
-    await itemsCollection().doc(String(item.id)).set(rest);
+    await bbTimeout(itemsCollection().doc(String(item.id)).set(rest), 30000, "Saving details");
     storageStatus = { ok: true };
   } catch (e) {
     pendingUploads = Math.max(0, pendingUploads - 1);
-    storageStatus = { ok: false, message: "Couldn't save to your cloud library — check your connection and try again." };
+    console.error("saveItem failed:", e);
+    const timedOut = /timed out/i.test(e.message || "");
+    storageStatus = {
+      ok: false,
+      message: timedOut
+        ? `Upload of "${item.name || "a file"}" stalled and timed out — this usually means a weak connection. Try again on stronger wifi, or re-upload that file.`
+        : "Couldn't save to your cloud library — check your connection and try again.",
+    };
   }
   renderStorageBanner();
 }
